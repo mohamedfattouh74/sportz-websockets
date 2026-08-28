@@ -1,4 +1,4 @@
-import Router from 'express';
+import { Router } from 'express';
 import { createMatchSchema, listMatchesQuerySchema } from '../db/schema.ts';
 import { z } from 'zod';
 import { createMatch, getAllMatches } from '../dal/match.ts';
@@ -32,6 +32,9 @@ if(!validatedData.success) {
 
 try{
   const match = await createMatch({...validatedData.data, status: getMatchStatus(validatedData.data.startTime, validatedData.data.endTime)});
+  if(res.app.locals.broadcastMatchCreated && match) {
+    res.app.locals.broadcastMatchCreated(match);
+  }
   res.status(201).json({ message: 'Match Created', match });
 } catch (error) {
   return res.status(500).json({ message: 'Internal server error', error: (error as Error).message });
