@@ -2,6 +2,12 @@ import { WebSocket, WebSocketServer } from "ws";
 import { Server } from "http";
 import type { Match } from "../db/schema.ts";
 
+type AliveWebSocket = WebSocket & { isAlive: boolean };
+
+function asAlive(socket: WebSocket): AliveWebSocket {
+    return socket as AliveWebSocket;
+}
+
 function sendJson(socket: WebSocket, payload: Object) {
     // Check if the socket is open
     if(socket.readyState !== WebSocket.OPEN) {
@@ -28,9 +34,28 @@ export function attachWebSocketServer(server: Server){
     const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 1024 * 1024 * 10 }); // Create a new WebSocket server and attach it to the express server
 
     wss.on('connection', (socket) => {
-        sendJson(socket, { type: 'welcome', message: 'Welcome to the WebSocket server' });
-        socket.on('error', console.error);
+        const client = asAlive(socket);
+        client.isAlive = true;
+        client.on('pong', () => { client.isAlive = true; });
+        sendJson(client, { type: 'welcome', message: 'Welcome to the WebSocket server' });
 
+        client.on('error', console.error);
+    });
+
+    const interval = setInterval(() => {
+        for (const ws of wss.clients) {
+            const client = asAlive(ws);
+            if (client.isAlive === false) {
+                client.terminate();
+                continue;
+            }
+            client.isAlive = false;
+            client.ping();
+        }
+    }, 30000);
+
+    wss.on('close', () => {
+        clearInterval(interval);
     });
 
     wss.on('error', (error) => {
