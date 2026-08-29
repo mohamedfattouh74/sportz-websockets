@@ -1,11 +1,77 @@
 import { WebSocket, WebSocketServer } from "ws";
 import { Server } from "http";
-import type { Match } from "../db/schema.ts";
+import type { Commentary, Match } from "../db/schema.ts";
 
-type AliveWebSocket = WebSocket & { isAlive: boolean };
+type AppWebSocket = WebSocket & {
+    isAlive: boolean;
+    subscriptions: Set<number>;
+};
 
-function asAlive(socket: WebSocket): AliveWebSocket {
-    return socket as AliveWebSocket;
+function asAppSocket(socket: WebSocket): AppWebSocket {
+    return socket as AppWebSocket;
+}
+
+const matchSubscribers = new Map<number, Set<WebSocket>>();
+
+function subscribeToMatch(matchId: number, socket: WebSocket) {
+    if(!matchSubscribers.has(matchId)) {
+        matchSubscribers.set(matchId, new Set());
+    }
+    matchSubscribers.get(matchId)?.add(socket);
+}
+
+function unsubscribeFromMatch(matchId: number, socket: WebSocket) {
+    const subscribers = matchSubscribers.get(matchId);
+    if(!subscribers) {
+        return;
+    }
+    subscribers.delete(socket);
+    if(subscribers.size === 0) {
+        matchSubscribers.delete(matchId);
+    }
+}
+
+
+function cleanupMatchSubscriptions(socket: AppWebSocket){
+    for(const matchId of socket.subscriptions){
+        unsubscribeFromMatch(matchId, socket);
+    }
+    socket.subscriptions.clear();
+}
+
+function parseMatchId(value: unknown): number | null {
+    if (typeof value !== 'string' && typeof value !== 'number') {
+        return null;
+    }
+    const matchId = Number(value);
+    if (!Number.isInteger(matchId) || matchId <= 0) {
+        return null;
+    }
+    return matchId;
+}
+
+function handleMessage(socket: AppWebSocket, data: Object) {
+    let message;
+    try{
+        message = JSON.parse(data.toString());
+    } catch (error) {
+        sendJson(socket, { type: 'error', message: 'Invalid JSON' });
+        return;
+    }
+
+    const matchId = parseMatchId(message.matchId);
+
+    if(message.type === 'subscribe' && matchId !== null) {
+        subscribeToMatch(matchId, socket);
+        socket.subscriptions.add(matchId);
+        sendJson(socket, { type: 'subscribed', matchId, message: 'Subscribed to match' });
+    } else if(message.type === 'unsubscribe' && matchId !== null) {
+        unsubscribeFromMatch(matchId, socket);
+        socket.subscriptions.delete(matchId);
+        sendJson(socket, { type: 'unsubscribed', matchId, message: 'Unsubscribed from match' });
+    } else {
+        sendJson(socket, { type: 'error', message: 'Invalid message' });
+    }
 }
 
 function sendJson(socket: WebSocket, payload: Object) {
@@ -20,7 +86,7 @@ function sendJson(socket: WebSocket, payload: Object) {
     }
 }
 
-function broadcast(wss: WebSocketServer,payload: Object) {
+function broadcastToAll(wss: WebSocketServer,payload: Object) {
     for(const client of wss.clients ){
         if(client.readyState !== WebSocket.OPEN) {
             continue; // Skip the client if it is not open
@@ -29,22 +95,55 @@ function broadcast(wss: WebSocketServer,payload: Object) {
     }
 }
 
+function broadcastToMatch(matchId: number, payload: Object) {
+    const subscribers = matchSubscribers.get(matchId);
+    if(!subscribers || subscribers.size === 0) {
+        return;
+    }
+    for(const client of subscribers) {
+        if(client.readyState !== WebSocket.OPEN) {
+            continue;
+        }
+        try{
+            sendJson(client, payload);
+        } catch (error) {
+            console.error(error);
+        }
+    }
+}
+
+
 
 export function attachWebSocketServer(server: Server){
     const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 1024 * 1024 * 10 }); // Create a new WebSocket server and attach it to the express server
 
     wss.on('connection', (socket) => {
-        const client = asAlive(socket);
+        const client = asAppSocket(socket);
         client.isAlive = true;
+        client.subscriptions = new Set();
         client.on('pong', () => { client.isAlive = true; });
+
         sendJson(client, { type: 'welcome', message: 'Welcome to the WebSocket server' });
+
+
+        socket.on('message', (data) => {
+            handleMessage(client, data);
+        });
+
+        socket.on('error', (error) => {
+            socket.terminate();
+        });
+
+        socket.on('close', () => {
+            cleanupMatchSubscriptions(client);
+        });
 
         client.on('error', console.error);
     });
 
     const interval = setInterval(() => {
         for (const ws of wss.clients) {
-            const client = asAlive(ws);
+            const client = asAppSocket(ws);
             if (client.isAlive === false) {
                 client.terminate();
                 continue;
@@ -64,8 +163,13 @@ export function attachWebSocketServer(server: Server){
 
 
     function broadcastMatchCreated(match: Match) {
-        broadcast(wss, { type: 'match_created', match });
+        broadcastToAll(wss, { type: 'match_created', match });
     }
 
-    return { broadcastMatchCreated };
+
+    function broadcastCommentaryCreated(matchId: number, commentary: Commentary) {
+        broadcastToMatch(matchId, {type: 'commentary_created', data:commentary});
+    }
+
+    return { broadcastMatchCreated, broadcastCommentaryCreated };
 }
