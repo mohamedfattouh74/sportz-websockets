@@ -24,7 +24,7 @@ export const commentary = pgTable('commentaries', {
   matchId: integer('match_id').references(() => match.id).notNull(),
   minute: integer('minute').notNull(),
   sequence: integer('sequence').notNull(),
-  period: integer('period').notNull(),
+  period: text('period').notNull(),
   eventType: text('event_type').notNull(),
   actor: text('actor').notNull(),
   team: text('team').notNull(),
@@ -61,10 +61,13 @@ export const updateMatchSchema = createUpdateSchema(match,
   }
 );
 
-export const listMatchesQuerySchema = z.object({
-  limit: z.coerce.number().optional().default(50),
-  offset: z.coerce.number().optional().default(0),
-})
+export const createCommentarySchema = createInsertSchema(commentary);
+export const selectCommentarySchema = createSelectSchema(commentary);
+export const updateCommentarySchema = createUpdateSchema(commentary);
+
+export type Commentary = z.infer<typeof selectCommentarySchema>
+export type NewCommentary = z.infer<typeof createCommentarySchema>
+export type CommentaryUpdate = z.infer<typeof updateCommentarySchema>
 
 export type Match = z.infer<typeof selectMatchSchema>
 export type NewMatch = z.infer<typeof createMatchSchema>
